@@ -1,0 +1,402 @@
+#Logistic Regression for UMARU Drg treatement study
+# ---------- Nam Pham ----------
+
+# Packages and Tools:
+
+library(tidyverse)
+library(gmodels)
+library(psych)
+library(car)
+library(sjmisc)
+library(sjPlot)
+library(ResourceSelection)
+library(lmtest)
+library(pROC)
+library(stargazer)
+
+options(scipen = 999)
+options(scipen = 0)
+
+log.pseudo.r2 <- function(LogModel) {
+  dev <- LogModel$deviance
+  nullDev <- LogModel$null.deviance
+  modelN <- length(LogModel$fitted.values)
+  R.l <- 1 - dev/nullDev
+  R.cs <- 1 - exp(-(nullDev - dev)/modelN)
+  R.n <- R.cs/(1 - (exp(-(nullDev/modelN))))
+  cat("Pseudo R^2 for Logistic Regression\n")
+  cat("Hosmer and Lemeshow R^2 ", round(R.l, 3), "\n")
+  cat("Cox and Snell R^2       ", round(R.cs, 3), "\n")
+  cat("Nagelkerke R^2          ", round(R.n, 3),     "\n")
+}
+
+modelsig <- function(LogModel) {
+  modelChi <- LogModel$null.deviance - LogModel$deviance
+  chidf <- LogModel$df.null - LogModel$df.residual
+  chisq.prob <- 1 - pchisq(modelChi, chidf)
+  cat("Significance: ", round(chisq.prob, 5), "\n")
+}
+
+#  ---------- LOAD DATA ----------
+
+UMARU <- read.csv("drugtreatment-1.csv")
+view(UMARU)
+
+
+# ---------- PRELIMINARY STEPS ----------
+
+# 1. Basic checks 
+# Means
+describe(UMARU)
+describe(UMARU$age)
+
+# Frequency tables 
+table(UMARU$ivhx)
+table(UMARU$ndrugtx)
+table(UMARU$race)
+table(UMARU$treat)
+table(UMARU$site)
+table(UMARU$dfree)
+
+# How various variables differ by levels of the DGREE variable
+
+UMARU$dfree_value <- ifelse(UMARU$dfree == 0, "Otherwise", "Dfree")
+UMARU$race_value <- ifelse(UMARU$race == 0, "White", "Other")
+
+CrossTable(UMARU$race, UMARU$dfree, expected = TRUE, format="SPSS")
+sjt.xtab(UMARU$race, UMARU$dfree_value, title = "Drug-Free observations based on Race")
+
+CrossTable(UMARU$treat, UMARU$dfree, expected = TRUE, format="SPSS")
+UMARU$treat_value <- ifelse(UMARU$treat == 0, "Short", "Long")
+sjt.xtab(UMARU$treat_value, UMARU$dfree_value, title = "Drug-Free observations based on treatment duration")
+
+CrossTable(UMARU$ivhx, UMARU$dfree, expected = TRUE, format="SPSS")
+
+CrossTable(UMARU$site, UMARU$dfree, expected = TRUE, format="SPSS")
+
+aggregate(dfree~treat, UMARU, mean)
+
+cor(UMARU$dfree, UMARU$beck)
+
+cor(UMARU$dfree, UMARU$age)
+
+cor(UMARU$dfree, UMARU$ndrugtx)
+
+cor(UMARU$ivhx, UMARU$ndrugtx)
+
+#  ---------- CORE ASSIGNMENT ----------
+
+# NAIVE MODEL
+
+UMARU_naive <- glm(dfree ~ 1, data = UMARU, family = binomial())
+summary(UMARU_naive)
+
+prob_naive <- predict(UMARU_naive, type = "response")
+
+UMARU$prob_naive <- prob_naive
+
+quantile(UMARU$prob_naive)
+
+# Predict "remained dfree" or "otherwise" based on model
+
+UMARU$pred_naive <- ifelse(UMARU$prob_naive > 0.5, "Dfree", "Otherwise") 
+
+# Check naive model's accuracy 
+table(UMARU$pred_naive)
+
+table(UMARU$pred_naive,UMARU$dfree_value)
+
+# Calculate the naive model prediction accuracy
+accur_naive <- 1 - round(mean(UMARU$pred_naive != UMARU$dfree_value), 5)
+
+# -------------- FIRST MODEL ----------------
+
+UMARU_1 <- glm(dfree ~ treat, family = binomial, data = UMARU)
+summary(UMARU_1)
+
+exp(coef(UMARU_1))
+log.pseudo.r2(UMARU_1)
+hoslem.test(UMARU_1$y, UMARU_1$fitted.values)
+lrtest(UMARU_1)
+modelsig(UMARU_1)
+
+tab_model(
+  UMARU_1,
+  string.est = "Estimate",
+  string.ci = "Conf. Int.",
+  dv.labels = "Drug Free Likelihood"
+)
+
+stargazer(
+  UMARU_1,
+  type ="text",
+  title = "Logistic Regression Results", 
+  dep.var.labels = "Drug Free Likelihood",
+  out= "model_1"
+)
+
+# Insert model probability into the dataset
+UMARU$prob_1 <- predict(UMARU_1, type = "response")
+quantile(UMARU$prob_1)
+
+# Predict "Dfree" or "otherwise" based on first model
+UMARU$pred_1 <- ifelse(UMARU$prob_1 > 0.5, "Dfree", "Otherwise")
+
+# Confusion table for first model
+table(UMARU$pred_1)
+table(UMARU$pred_1, UMARU$dfree_value) 
+
+# Calculate model 1 prediction accuracy
+accur_1 <- 1 - round(mean(UMARU$pred_1 != UMARU$dfree_value), 5)
+
+#lowering threhold:
+UMARU$pred_1_0.25 <- ifelse(UMARU$prob_1 > 0.25, "Dfree", "Otherwise")
+
+table(UMARU$pred_1_0.25)
+table(UMARU$dfree_value)
+table(UMARU$pred_1_0.25, UMARU$dfree_value) 
+table(UMARU$dfree_value, UMARU$pred_1_0.25) 
+
+accur_1_0.25 <- 1 - round(mean(UMARU$pred_1_0.25 != UMARU$dfree_value), 5)
+
+table(UMARU$pred_1_0.25)
+
+# -------------- Second MODEL ----------------
+UMARU_2 <- glm(dfree ~ treat + beck, family = binomial, data = UMARU)
+summary(UMARU_2)
+
+exp(coef(UMARU_2))
+log.pseudo.r2(UMARU_2)
+
+hoslem.test(UMARU_2$y, UMARU_2$fitted.values)
+lrtest(UMARU_2)
+
+
+UMARU$prob_2 <- predict(UMARU_2, type = "response")
+quantile(UMARU$prob_2)
+
+UMARU$pred_2 <- ifelse(UMARU$prob_2 > 0.3, "Dfree", "Otherwise")
+
+table(UMARU$pred_2)
+table(UMARU$dfree_value, UMARU$pred_2) 
+
+accur_2 <- 1 - round(mean(UMARU$pred_2 != UMARU$dfree_value), 5)
+
+
+# -------------- Third MODEL ----------------
+UMARU_3 <- glm(dfree ~ treat + ivhx, family = binomial, data = UMARU)
+summary(UMARU_3)
+
+exp(coef(UMARU_3))
+log.pseudo.r2(UMARU_3)
+hoslem.test(UMARU_3$y, UMARU_3$fitted.values)
+lrtest(UMARU_3)
+
+UMARU$prob_3 <- predict(UMARU_3, type = "response")
+quantile(UMARU$prob_3)
+
+UMARU$pred_3 <- ifelse(UMARU$prob_3 > 0.3, "Dfree", "Otherwise")
+
+table(UMARU$pred_3)
+table(UMARU$dfree_value, UMARU$pred_3) 
+
+accur_3 <- 1 - round(mean(UMARU$pred_3 != UMARU$dfree_value), 5)
+
+# -------------- Fourth MODEL ----------------
+UMARU_4 <- glm(dfree ~ treat + ivhx + ndrugtx, family = binomial, data = UMARU)
+summary(UMARU_4)
+
+exp(coef(UMARU_4))
+log.pseudo.r2(UMARU_4)
+hoslem.test(UMARU_4$y, UMARU_4$fitted.values)
+lrtest(UMARU_4)
+
+UMARU$prob_4 <- predict(UMARU_4, type = "response")
+quantile(UMARU$prob_4)
+
+UMARU$pred_4 <- ifelse(UMARU$prob_4 > 0.3, "Dfree", "Otherwise")
+
+table(UMARU$pred_4)
+table( UMARU$dfree_value, UMARU$pred_4) 
+
+accur_4 <- 1 - round(mean(UMARU$pred_4 != UMARU$dfree_value), 5)
+
+# -------------- FINAL MODEL ----------------
+UMARU_final <- glm(dfree ~ treat + ivhx + ndrugtx + age, family = binomial, data = UMARU)
+summary(UMARU_final)
+
+exp(coef(UMARU_final))
+log.pseudo.r2(UMARU_final)
+hoslem.test(UMARU_final$y, UMARU_final$fitted.values)
+lrtest(UMARU_final)
+modelsig(UMARU_final)
+
+UMARU$prob_final <- predict(UMARU_final, type = "response")
+quantile(UMARU$prob_final)
+
+UMARU$pred_final <- ifelse(UMARU$prob_final > 0.5, "Dfree", "Otherwise")
+
+table(UMARU$pred_final)
+table(UMARU$dfree_value, UMARU$pred_final) 
+
+accur_final <- 1 - round(mean(UMARU$pred_final != UMARU$dfree_value), 5)
+
+#lowing threshold for final model 
+UMARU$pred_final_30 <- ifelse(UMARU$prob_final > 0.3, "Dfree", "Otherwise")
+
+table(UMARU$pred_final_30)
+table(UMARU$dfree_value, UMARU$pred_final_30) 
+
+accur_final_30 <- 1 - round(mean(UMARU$pred_final_30 != UMARU$dfree_value), 5)
+
+tab_model(
+  UMARU_final,
+  string.est = "Exp",
+  string.ci = "Conf. Int.",
+  dv.labels = "Drug Free Likelihood"
+)
+
+# -------------- Sixth MODEL ----------------
+UMARU_6 <- glm(dfree ~ treat + ivhx + ndrugtx + age + race, family = binomial, data = UMARU)
+summary(UMARU_6)
+
+exp(coef(UMARU_6))
+log.pseudo.r2(UMARU_6)
+hoslem.test(UMARU_6$y, UMARU_6$fitted.values)
+lrtest(UMARU_6)
+
+UMARU$prob_6 <- predict(UMARU_6, type = "response")
+quantile(UMARU$prob_6)
+
+UMARU$pred_6 <- ifelse(UMARU$prob_6 > 0.5, "Dfree", "Otherwise")
+
+table(UMARU$pred_6)
+table(UMARU$dfree_value, UMARU$pred_6) 
+
+accur_6 <- 1 - round(mean(UMARU$pred_6 != UMARU$dfree_value), 5)
+
+# -------------- MODEL with all ----------------
+
+UMARU_all <- glm(dfree ~ treat + beck + ivhx + ndrugtx + age + race, family = binomial, data = UMARU)
+summary(UMARU_all)
+
+
+# MODEL TABLES: 
+
+stargazer(
+  UMARU_1, UMARU_final,UMARU_all,
+  type ="text",
+  title = "Logistic Regression Results", 
+  dep.var.labels = "Drug Free Likelihood",
+  out= "Logresults_1"
+)
+
+stargazer(
+  UMARU_6, UMARU_final,
+  type ="text",
+  title = "Logistic Regression Results", 
+  dep.var.labels = "Drug Free Likelihood"
+)
+
+stargazer(
+  UMARU_final,
+  type ="text",
+  title = "Logistic Regression Results", 
+  dep.var.labels = "Drug Free Likelihood",
+  out= "Logresults_2"
+)
+
+#  ---------- Advance Extension ----------
+
+roc_final <- roc(UMARU$dfree, UMARU$prob_final)
+plot(roc_final, main = "ROC Curve") # main adds a title
+abline(a = 0, b = 1, lty = 2)
+legend(
+  "bottomright", 
+  legend = paste0("AUC = ", round(auc(roc_final), 2)),
+  bty = "n", 
+  cex = 0.8, 
+  col = "black"
+)
+
+
+#Find the individual or group with the highest and lowest probability of
+# survival. What are their characteristics? Who are they? Does this make sense
+max_prob <- UMARU$prob_final == max(UMARU$prob_final)
+
+# Now, lets determine the ROW in the dataframe that includes maximum probabilty.
+# which() simply pulls all TRUE values of a logical object.
+max_prob_row <- which(max_prob)
+
+# Now lets pull all the details of that row. 
+UMARU[max_prob_row,]
+
+# We can do the same for min (bringing code together). 
+UMARU[which(UMARU$prob_final == min(UMARU$prob_final)),]
+
+# RUNNING INTERACTION 
+
+quantile(UMARU$ndrugtx)
+quantile(UMARU$age)
+UMARU$IV_recentuse <- ifelse(UMARU$ivhx == 3, 1, 0)
+UMARU$long_drug_his <- ifelse(UMARU$ndrugtx >= 10, 1, 0)
+UMARU$adult <- ifelse(UMARU$age >= 37, 1, 0)
+
+UMARU_int <- glm(dfree ~ treat + IV_recentuse*long_drug_his*adult, data = UMARU)
+summary(UMARU_int)
+
+exp(coef(UMARU_int))
+log.pseudo.r2(UMARU_int)
+
+vif(UMARU_int)
+stargazer(
+  UMARU_int,
+  type ="text",
+  title = "Logistic Regression Results", 
+  dep.var.labels = "Drug Free Likelihood",
+  out= "Logresults_3"
+)
+
+UMARU_int2 <- glm(dfree ~ treat + IV_recentuse*long_drug_his + adult, data = UMARU)
+summary(UMARU_int2)
+
+#RUNNING THE MODEL SEPERATELY BY SITE
+
+# Create two subsets of the data based on site
+site_A <- subset(UMARU, site == 0)
+site_B <- subset(UMARU, site == 1)
+
+# Fit the logistic regression model separately for each site
+model_A <- glm(dfree ~ treat + ivhx + ndrugtx + age, family = binomial, data = site_A)
+summary(model_A)
+exp(coef(model_A))
+site_A$prob_A <- predict(model_A, type = "response")
+quantile(site_A$prob_A)
+site_A$pred_A <- ifelse(site_A$prob_A > 0.5, "Dfree", "Otherwise")
+table(site_A$dfree_value, site_A$pred_A) 
+
+accur_A <- 1 - round(mean(site_A$pred_A != site_A$dfree_value), 5)
+
+model_B <- glm(dfree ~ treat + ivhx + ndrugtx + age, family = binomial, data = site_B)
+summary(model_B)
+exp(coef(model_B))
+site_B$prob_B <- predict(model_B, type = "response")
+quantile(site_B$prob_B)
+site_B$pred_B <- ifelse(site_B$prob_B > 0.5, "Dfree", "Otherwise")
+table(site_B$dfree_value, site_B$pred_B) 
+
+accur_B <- 1 - round(mean(site_B$pred_B != site_B$dfree_value), 5)
+
+#run model on full data. the 
+
+model_C <- glm(dfree ~ treat + ivhx + ndrugtx + age + treat*site, family = binomial, data = UMARU)
+summary(model_C)
+ 
+UMARU$prob_C <- predict(model_C, type = "response")
+quantile(UMARU$prob_C)
+UMARU$pred_C <- ifelse(UMARU$prob_C > 0.5, "Dfree", "Otherwise")
+table(UMARU$dfree_value, UMARU$pred_C) 
+
+accur_C <- 1 - round(mean(UMARU$pred_C != UMARU$dfree_value), 5)
+
+
